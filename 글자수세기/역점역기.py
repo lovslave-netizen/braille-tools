@@ -9,22 +9,26 @@ import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
-# exe로 묶였으면 안에 들어있는 DLL(BrailleTransLibrary)을 쓰고,
+# exe로 묶였으면 안에 들어있는 jydbt\trans (점사랑 DLL)를 쓰고,
 # 소스로 돌릴 땐 이 폴더 옆의 BrailleTransLibrary(없으면 설치된 점사랑7)를 쓴다.
 if getattr(sys, "frozen", False):
-    BASE = os.path.join(sys._MEIPASS, "BrailleTransLibrary")
+    BASE = os.path.join(sys._MEIPASS, "jydbt", "trans")
 else:
     _here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "BrailleTransLibrary")
     BASE = os.environ.get(
         "BRL_BASE",
         _here if os.path.isdir(_here) else r"C:\Program Files (x86)\Jeomsarang7",
     )
-os.add_dll_directory(BASE)
-_dll = ctypes.CDLL(os.path.join(BASE, "BrailleTransMain.dll"))
-
-_rev = _dll.BrailleTransBrailleToString
-_rev.restype = ctypes.c_int
-_rev.argtypes = [ctypes.c_char_p, ctypes.c_wchar_p, ctypes.c_int, ctypes.c_int]
+# 예전 점사랑 DLL 방식 (JYDBT 엔진을 못 쓸 때만). 못 읽어도 JYDBT 쪽은 그대로 동작한다.
+_rev = None
+try:
+    os.add_dll_directory(BASE)
+    _dll = ctypes.CDLL(os.path.join(BASE, "BrailleTransMain.dll"))
+    _rev = _dll.BrailleTransBrailleToString
+    _rev.restype = ctypes.c_int
+    _rev.argtypes = [ctypes.c_char_p, ctypes.c_wchar_p, ctypes.c_int, ctypes.c_int]
+except OSError:
+    _rev = None
 
 
 def reverse_translate_line(line: str, mode: int = 0) -> str:
@@ -33,6 +37,8 @@ def reverse_translate_line(line: str, mode: int = 0) -> str:
     if not line.strip():
         # 빈 줄(공백만 있는 줄 포함)을 그대로 넣으면 DLL이 쓰레기값을 내놓음 -> 건너뜀
         return line
+    if _rev is None:
+        raise RuntimeError("예전 점사랑 DLL 을 읽지 못했습니다 (JYDBT 엔진을 쓰세요)")
     lowered = line.lower()
     buf = ctypes.create_unicode_buffer(max(256, len(lowered) * 4 + 64))
     _rev(lowered.encode("latin-1", errors="replace"), buf, len(buf), mode)
@@ -156,6 +162,85 @@ def reverse_translate_text(text: str, mode: int = 0) -> str:
     # 한 번에 넣으면 개행이 사라지므로, 줄 단위로 처리해서 다시 이어붙인다.
     joined = "\n".join(reverse_translate_line(line, mode) for line in text.splitlines())
     return apply_reverse_corrections(joined) if mode == 0 else joined
+
+
+# ---- JYDBT 엔진 (jydbt-rev.exe 호출). 찾지 못하면 None -> 예전 DLL 방식으로 돌아간다 ----
+def _jydbt_rev_exe():
+    cands = []
+    if os.environ.get("JYDBT_REV"):
+        cands.append(os.environ["JYDBT_REV"])
+    if getattr(sys, "frozen", False):
+        cands.append(os.path.join(sys._MEIPASS, "jydbt", "jydbt-rev.exe"))  # exe 안에 묶인 것
+        cands.append(os.path.join(os.path.dirname(sys.executable), "jydbt-rev.exe"))
+    here = os.path.dirname(os.path.abspath(__file__))
+    cands.append(os.path.join(here, "jydbt", "jydbt-rev.exe"))  # 소스로 돌릴 때 (exe 와 같은 묶음 폴더)
+    cands.append(os.path.join(here, "jydbt-rev.exe"))
+    cands.append(r"E:\파이썬\JYDBT\target\release\jydbt-rev.exe")  # 개발 PC 의 빌드 위치
+    for c in cands:
+        if os.path.isfile(c):
+            return c
+    return None
+
+
+def jydbt_available() -> bool:
+    return _jydbt_rev_exe() is not None
+
+
+def _jydbt_env():
+    """묶인 점사랑 도우미(32비트 jydbt-trans.exe)의 위치를 jydbt-rev 에 알려 준다. 설치된 JYDBT 가 필요 없게."""
+    env = dict(os.environ)
+    base = sys._MEIPASS if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
+    trans = os.path.join(base, "jydbt", "trans", "jydbt-trans.exe")
+    if os.path.isfile(trans):
+        env["JYDBT_TRANS_EXE"] = trans
+    return env
+
+
+def _run_jydbt(args):
+    import subprocess
+    exe = _jydbt_rev_exe()
+    if exe is None:
+        raise RuntimeError("jydbt-rev.exe 를 찾지 못했습니다")
+    r = subprocess.run([exe] + args, capture_output=True, env=_jydbt_env())
+    if r.returncode != 0:
+        raise RuntimeError(r.stderr.decode("utf-8", "replace").strip() or "JYDBT 도구 오류")
+
+
+def reverse_jydbt_text(text: str) -> str:
+    """BRF 글(상자에 있는 글)을 JYDBT 엔진으로 역점역한다."""
+    import tempfile
+    fd, brf = tempfile.mkstemp(suffix=".brf")
+    os.close(fd)
+    fd2, out = tempfile.mkstemp(suffix=".txt")
+    os.close(fd2)
+    try:
+        with open(brf, "wb") as f:
+            f.write(text.encode("latin-1", errors="replace"))
+        _run_jydbt([brf, out])
+        with open(out, "r", encoding="utf-8") as f:
+            return f.read()
+    finally:
+        for x in (brf, out):
+            try:
+                os.remove(x)
+            except OSError:
+                pass
+
+
+def dxb_to_brf_text(path: str) -> str:
+    """dxb 파일을 BRF 글(쪽 나눔 포함)로 바꾼다. 글자수세기 화면이 BRF 처럼 쪽을 고르게 하려고."""
+    import tempfile
+    fd, out = tempfile.mkstemp(suffix=".brf")
+    os.close(fd)
+    try:
+        _run_jydbt(["--brf", path, out])
+        with open(out, "rb") as f:
+            return f.read().decode("latin-1")
+    finally:
+        try:
+            os.remove(out)
+        except OSError:
+            pass
 
 
 def read_source_file(path: str) -> str:

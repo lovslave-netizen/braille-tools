@@ -5,7 +5,7 @@ a = Analysis(
     ['글자수세기.py'],
     pathex=[],
     binaries=[],
-    datas=[('BrailleTransLibrary', 'BrailleTransLibrary')],
+    datas=[('jydbt', 'jydbt')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

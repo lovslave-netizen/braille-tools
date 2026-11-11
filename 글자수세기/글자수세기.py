@@ -12,7 +12,7 @@ import re
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
-from 역점역기 import reverse_translate_text, read_source_file
+from 역점역기 import reverse_translate_text, read_source_file, reverse_jydbt_text, dxb_to_brf_text, jydbt_available
 
 FORM_FEED = "\f"
 _PAGE_NUM_RE = re.compile(r"[ \t]*#([A-Ja-j]+)[ \t]*$")
@@ -216,7 +216,10 @@ def main():
             out.delete("1.0", "end")
             return
         try:
-            text = reverse_translate_text(raw, lang_var.get())
+            if jydbt_available():
+                text = reverse_jydbt_text(raw)  # JYDBT 엔진 (영어·한글 자동 판별, 한글 모드 선택은 아직 안 쓴다)
+            else:
+                text = reverse_translate_text(raw, lang_var.get())
         except Exception as e:
             messagebox.showerror("오류", f"역점역 중 오류:\n{e}")
             return
@@ -248,11 +251,18 @@ def main():
     def open_file():
         path = filedialog.askopenfilename(
             title="BRF 파일 선택",
-            filetypes=[("점자 텍스트", "*.brf;*.txt;*.blb;*.blt"), ("모든 파일", "*.*")],
+            filetypes=[("점자 문서", "*.brf;*.dxb;*.txt;*.blb;*.blt"), ("모든 파일", "*.*")],
         )
         if not path:
             return
-        loaded["raw"] = read_source_file(path)
+        try:
+            if path.lower().endswith(".dxb"):
+                loaded["raw"] = dxb_to_brf_text(path)  # dxb 는 먼저 BRF 글로 바꿔서 쪽 고르기에 넣는다
+            else:
+                loaded["raw"] = read_source_file(path)
+        except Exception as e:
+            messagebox.showerror("오류", f"파일을 열 수 없습니다:\n{e}")
+            return
         page_var.set("")
         load_pages()
 
